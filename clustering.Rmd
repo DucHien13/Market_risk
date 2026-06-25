@@ -1,0 +1,178 @@
+---
+title: "Clustering"
+author: "Trần Đức Hiển - 11222280"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(factoextra)
+library(cluster)
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+return_df <- read_excel("C:/Users/admin/OneDrive - National Economics University/Tài liệu/Tài liệu ôn thi/Project/Data/HOSE_Long_Format_GARCH.xlsx")
+#View(return_df)
+
+garch_df <- read_excel("C:/Users/admin/OneDrive - National Economics University/Tài liệu/Tài liệu ôn thi/Project/Data/HOSE_Conditional_Variance_GARCH11_Long.xlsx")
+#View(garch_df)
+
+gm_df <- read_excel("C:/Users/admin/OneDrive - National Economics University/Tài liệu/Tài liệu ôn thi/Project/Data/GARCH_MIDAS_Full_Output_20260129_2344.xlsx")
+#View(gm_df)
+```
+
+```{r}
+#Lay data 2 nam 2016 va 2017
+return_df1617 = return_df %>%
+  mutate(Date = as.Date(Date, format = "%Y-%m-%d"))%>%
+  filter(year(Date) %in% c(2016,2017))
+
+garch_df1617 = garch_df %>%
+  mutate(Date = as.Date(Date, format = "%Y-%m-%d"))%>%
+  filter(year(Date) %in% c(2016,2017))
+
+gm_df1617 = gm_df%>%
+  mutate(Date = as.Date(Date, format = "%Y-%m-%d"))%>%
+  filter(year(Date) %in% c(2016,2017))
+
+#kiem tra lai du lieu
+range(return_df1617$Date)
+range(garch_df1617$Date)
+range(gm_df1617$Date)
+
+#gop data
+df1 = return_df1617 %>%
+  inner_join(garch_df1617, by = c("Ticker", "Date"))
+
+df2 = return_df1617 %>%
+  inner_join(gm_df1617, by = c("Ticker", "Date"))
+
+#View(df1)
+#View(df2)
+
+df1 = df1%>%
+  select(-ClosePrice)
+df2 = df2%>%
+  select(-ClosePrice)%>%
+  select(-Total_Var)
+```
+
+```{r}
+#Clustering_garch
+
+#Tinh ma tran khoang cach 
+d1 = 0
+features1 = c("Log_Return","Variance_Pct_squared")
+for(i in features1) {
+  temp1 <- df1 %>%
+    select(Date, Ticker, all_of(i)) %>%
+    pivot_wider(
+      names_from  = Ticker,
+      values_from = all_of(i)
+    ) %>%
+    arrange(Date) %>%
+    select(-Date)
+
+  temp1 <- as.matrix(temp1)
+  temp1 <- t(scale(t(temp1))) 
+  C = cor(temp1, use = "pairwise.complete.obs")
+  temp1 = as.dist(sqrt(2 * (1 - C)))
+  d1 = d1 + temp1
+}
+
+#Clustering 
+hc1 <- hclust(d1, method = "ward.D2")
+plot(hc1)
+
+#Chon so cluster toi uu
+library(cluster)
+
+k_grid <- 4:10 #Chia toi thieu 4 cum, toi da 10 cum 
+
+sil_avg1 <- sapply(k_grid, function(k) {
+  cl1 <- cutree(hc1, k)
+  sil1 <- silhouette(cl1, d1)
+  mean(sil1[, 3])
+})
+
+plot(k_grid, sil_avg1, type = "b",
+     xlab = "Number of clusters",
+     ylab = "Average silhouette width") #chon so k o diem cao nhat 
+
+group1 <- cutree(hc1, k = 6) #chia thanh 6 cluster
+
+cluster_df1 <- data.frame(
+  Ticker = names(group1),
+  cluster = factor(group1)
+)
+
+df1 <- df1 %>%
+  left_join(cluster_df1, by = "Ticker")
+
+View(df1)
+
+
+```
+
+
+
+```{r}
+#Clustering_GM
+
+
+d2 = 0
+features2 = c("Log_Return","Long_Run","Short_Run")
+for(i in features2) {
+  temp2 <- df2 %>%
+    select(Date, Ticker, all_of(i)) %>%
+    pivot_wider(
+      names_from  = Ticker,
+      values_from = all_of(i)
+    ) %>%
+    arrange(Date) %>%
+    select(-Date)
+
+  temp2 <- as.matrix(temp2)
+  temp2 <- t(scale(t(temp2))) 
+  C = cor(temp2, use = "pairwise.complete.obs")
+  temp2 = as.dist(sqrt(2 * (1 - C)))
+  d2 = d2 + temp2
+}
+
+hc2 <- hclust(d2, method = "ward.D2")
+plot(hc2)
+
+#Chon so cluster toi uu
+library(cluster)
+
+k_grid <- 4:10
+
+sil_avg2 <- sapply(k_grid, function(k) {
+  cl2 <- cutree(hc2, k)
+  sil2 <- silhouette(cl2, d2)
+  mean(sil2[, 3])
+})
+
+plot(k_grid, sil_avg2, type = "b",
+     xlab = "Number of clusters",
+     ylab = "Average silhouette width")
+
+group2 <- cutree(hc2, k = 5) #chia thanh 5 cluster
+
+cluster_df2 <- data.frame(
+  Ticker = names(group2),
+  cluster = factor(group2)
+)
+
+df2 <- df2 %>%
+  left_join(cluster_df2, by = "Ticker")
+
+View(df2)
+
+```
+

@@ -1,0 +1,149 @@
+---
+title: "VaR"
+author: "Trần Đức Hiển - 11222280"
+date: '`r Sys.Date()`'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(PerformanceAnalytics)
+library(quantmod)
+library(tidyverse)
+library(rugarch)
+```
+```{r}
+#Lay du lieu cp tu yahoo finance
+symbols <- c("AAPL", "MSFT", "^GSPC")
+getSymbols(symbols, from = "2025-01-01", to = "2025-12-31")
+
+prices <- merge(
+  Cl(AAPL),
+  Cl(MSFT),
+  Cl(GSPC))
+colnames(prices) <- c("AAPL", "MSFT", "GSPC")
+
+# Tính log return
+returns <- na.omit(diff(log(prices)))
+head(returns)
+```
+```{r}
+#Tao ra 1 danh muc voi trong so 
+weights <- c(0.6, 0.3, -0.4)
+
+portfolio_returns <- Return.portfolio(returns, weights = weights, rebalance_on = "months")
+colnames(portfolio_returns) <- "Portfolio"
+
+#Tinh VaR theo 3 cach va so sanh
+#Historical
+VaR_hist <- VaR(portfolio_returns, p = 0.95, method = "historical")
+VaR_hist
+ES_hist <- ES(portfolio_returns, p = 0.95, method = "historical")
+ES_hist
+
+#Delta-normal
+mean_return = mean(portfolio_returns)
+sd_return   = sd(portfolio_returns)
+x = 0.95
+alpha = 1-x
+z_alpha   = qnorm(alpha)  # 5% quantile
+pi = 3.14
+
+VaR_varcov = (mean_return + z_alpha * sd_return)
+VaR_varcov
+
+phi_z = (1 / sqrt(2 * pi)) * exp(-0.5 * z_alpha^2)
+ES_varcov = -(mean_return + sd_return * (phi_z/alpha))
+ES_varcov
+
+#Monte-carlo simulation
+set.seed(123)
+simu_returns = rnorm(100000, mean = mean_return, sd = sd_return)
+VaR_mc = quantile(simu_returns, 0.05)
+VaR_mc
+
+ES_mc = mean(simu_returns[simu_returns < VaR_mc])
+ES_mc
+
+#so sanh ket qua
+VaR_results <- tibble(
+  Method = c("Historical", "Variance-Covariance", "Monte Carlo"),
+  VaR = c(as.numeric(VaR_hist), VaR_varcov, VaR_mc),
+   ES = c(as.numeric(ES_hist), ES_varcov, ES_mc)
+)
+print(VaR_results)
+```
+```{r}
+#Ve 3 nguong VaR tren cung 1 bieu do
+hist_data <- data.frame(
+  Date = index(portfolio_returns),
+  Returns = as.numeric(portfolio_returns)
+)
+
+ggplot(hist_data, aes(x = Returns)) +
+  geom_histogram(bins = 40, fill = "lightblue", color = "black") +
+
+  geom_vline(xintercept = VaR_hist, 
+             color = "red", 
+             linetype = "solid",
+             linewidth = 1) +
+
+  geom_vline(xintercept = VaR_varcov, 
+             color = "darkgreen", 
+             linetype = "dashed",
+             linewidth = 1) +
+
+  geom_vline(xintercept = VaR_mc, 
+             color = "purple", 
+             linetype = "dotted",
+             linewidth = 1)
+
+
+```
+```{r}
+#Back testing 
+
+#Tinh so lan sai pham 
+
+violations <- portfolio_returns < as.numeric(VaR_hist)
+sum(violations)
+
+N <- length(portfolio_returns)
+viol <- sum(violations)
+
+expected <- 0.05 * N
+
+viol_ratio <- viol / expected
+
+viol
+expected
+viol_ratio
+
+#viol_ratio > 1, VaR underestimate risk
+
+```
+
+
+```{r}
+#Tinh von yeu cau cho rui ro gia co phieu
+#Gia su danh muc dau tu tri gia 100 trieu USD
+Portfolio_value = 100
+
+LP <- sum(weights[weights > 0])*Portfolio_value
+SP <- sum(abs(weights[weights < 0]))*Portfolio_value
+
+ERW <- 0.08
+
+K_SR <- (LP + SP) * 0.08
+K_GR <- abs(LP - SP) * ERW
+
+K_total <- K_SR + K_GR
+
+K_SR
+K_GR
+K_total
+```
+

@@ -1,0 +1,175 @@
+---
+title: "Stock_price_analysis"
+author: "Trần Đức Hiển - 11222280"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(quantmod)
+library(tidyquant)
+library(tseries)
+library(forecast)
+```
+```{r}
+#Import data from yahoo finance
+getSymbols("AAPL", src = "yahoo", from = "2020-01-01", to = Sys.Date())
+df <- data.frame(date = index(AAPL), coredata(AAPL))
+head(df)
+
+
+```
+```{r}
+#Data processing  
+df = df%>%
+  rename(Open = AAPL.Open, High = AAPL.High, Low = AAPL.Low,
+         Close = AAPL.Close, Volume = AAPL.Volume, Adjusted = AAPL.Adjusted)%>%
+  mutate(year = year(date),
+         month = month(date, label = TRUE))%>%
+  mutate(Returns = log(Close / lag(Close)))%>%
+  drop_na()
+head(df)
+
+#Mot vai thong ke mo ta
+df %>%
+  group_by(year) %>%
+  summarise(mean_price = mean(Close, na.rm = TRUE),
+            sd_price = sd(Close,na.rm = TRUE),
+            min_price = min(Close, na.rm = TRUE),
+            max_price = max(Close, na.rm = TRUE))
+#Gia cp cua apple co xu huong tang theo thoi gian, bien dong manh vao 2 nam 2020 va 2024 
+
+df %>%
+  group_by(year) %>%
+  summarise(avg_return = mean(Returns, na.rm = TRUE),
+            sd_return = sd(Returns, na.rm = TRUE),
+            pos_days = sum(Returns > 0, na.rm = TRUE),
+            neg_days = sum(Returns < 0, na.rm = TRUE))
+
+#Loi suat trung binh luon duong, so ngay co loi suat duong lon hon, tru 2022.
+
+
+```
+```{r}
+#visualize
+chartSeries(AAPL, theme = chartTheme("white"), type = "candlesticks")
+
+#Heatmap loi suat theo thang
+df_month = df %>%
+  group_by(year, month) %>%
+  summarise(mean_return = mean(Returns, na.rm = TRUE), .groups = "drop")
+
+ggplot(df_month, aes(x = month, y = factor(year), fill = mean_return)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "red", mid = "white", high = "darkgreen", midpoint = 0) +
+  labs(title = "Heatmap: Monthly Average Returns",
+       x = "Month", y = "Year", fill = "Avg Return") +
+  theme_minimal()
+
+# Moving Average
+chartSeries(AAPL, TA = "addSMA(n = 20, col = 'blue'); addSMA(n = 50, col = 'red')")
+
+# Bollinger Bands
+chartSeries(AAPL, TA = "addBBands()")
+
+# Relative Strength Index
+chartSeries(AAPL, TA = "addRSI()")
+```
+```{r}
+#Du bao gia su dung cac ki thuat time series 
+library(zoo)
+library(Metrics)
+library(car)
+library(lmtest)
+library(urca)
+close = ts(df$Close, start = c(2020,1), frequency = 252)
+
+#ACF, PACF
+acf(close)
+pacf(close)
+
+#ADF test
+summary(ur.df(close,type = "trend",lag = 0))
+
+#ARIMA
+arima11 <- arima(close, c(1,1,1))
+summary(arima11)
+checkresiduals(arima11)
+
+close_forecast = forecast(arima11, 5)
+close_forecast
+```
+```{r}
+#Du bao voi machine learning
+
+library(TTR)  # RSI, SMA
+
+df <- df %>%
+  mutate(
+    Return = log(Close / lag(Close)),
+    Return_1 = lag(Return, 1),
+    Close_lag1 = lag(Close, 1),
+    Close_lag2 = lag(Close, 2),
+    SMA20 = SMA(Close, n = 20),
+    SMA50 = SMA(Close, n = 50),
+    EMA12 = EMA(Close, n = 12),
+    Vol_20 = rollapply(Return, 20, sd, fill = NA, align = "right"),
+    RSI14 = RSI(Close, n = 14),
+    weekday = wday(date, label = TRUE),
+    month = month(date)
+  ) %>%
+  drop_na()
+
+#Chia tap train/test 
+n <- nrow(df)
+train_idx <- 1:floor(0.8 * n)
+test_idx <- (floor(0.8 * n) + 1):n
+
+train <- df[train_idx, ]
+test  <- df[test_idx, ]
+
+# Chuẩn hóa cho ML (scale numeric features using preProcess)
+library(caret)
+num_vars <- c("Close","Close_lag1","Close_lag2","Return_1","SMA20","SMA50","EMA12","Vol_20","RSI14","Volume")
+preproc <- preProcess(train[, num_vars], method = c("center", "scale"))
+train_scaled <- train
+train_scaled[, num_vars] <- predict(preproc, train[, num_vars])
+test_scaled <- test
+test_scaled[, num_vars] <- predict(preproc, test[, num_vars])
+
+#random forest 
+library(randomForest)
+
+features <- c("Close","Close_lag1","Close_lag2","Return_1","SMA20","SMA50","EMA12","Vol_20","RSI14","Volume")
+rf_mod <- randomForest(Close~., data =  train_scaled[, features], ntree = 500)
+pred_rf <- predict(rf_mod, newdata = test_scaled[, features])
+
+#XG boost
+library(xgboost)
+
+dtrain <- xgb.DMatrix(data = as.matrix(train_scaled[, features]), label = train_scaled$Close)
+dtest  <- xgb.DMatrix(data = as.matrix(test_scaled[, features]), label = test_scaled$Close)
+
+params <- list(objective = "reg:squarederror", eta = 0.05, max_depth = 6, subsample = 0.8)
+bst <- xgb.train(params, dtrain, nrounds = 500, watchlist = list(train = dtrain), verbose = 0)
+pred_xgb <- predict(bst, newdata = dtest)
+
+
+evaluate <- function(true, pred){
+  list(
+    RMSE = rmse(true, pred),
+    MAE  = mae(true, pred),
+    MAPE = mape(true, pred)
+  )
+}
+res_rf    <- evaluate(test$Close, pred_rf)
+res_xgb   <- evaluate(test$Close, pred_xgb)
+res_rf
+res_xgb
+```
+

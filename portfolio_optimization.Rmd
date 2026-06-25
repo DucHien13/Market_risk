@@ -1,0 +1,279 @@
+---
+title: "Untitled"
+author: "Trần Đức Hiển - 11222280"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(MarkowitzR)
+
+```
+
+```{r}
+rf_df <- read.csv("C:/Users/admin/OneDrive - National Economics University/Tài liệu/Tài liệu ôn thi/Project/Data/riskfreerate.csv")
+View(rf_df)
+
+df1 <- read_excel("C:/Users/admin/OneDrive - National Economics University/Tài liệu/Tài liệu ôn thi/Project/Data/output_clustering.xlsx", 
+    sheet = "df1")
+View(df1)
+df2 <- read_excel("C:/Users/admin/OneDrive - National Economics University/Tài liệu/Tài liệu ôn thi/Project/Data/output_clustering.xlsx", 
+    sheet = "df2")
+View(df2)
+
+```
+
+```{r}
+#Data preparation
+
+is_leap_year <- function(year) {
+  (year %% 4 == 0 & year %% 100 != 0) | (year %% 400 == 0)
+}
+
+rf_df1 <- rf_df %>%
+  select(Ngày, Lần.cuối) %>%
+  rename(
+    Date = Ngày,
+    Yield_annual = Lần.cuối
+  ) %>%
+  mutate(
+    Date = as.Date(Date, format = "%d/%m/%Y"),
+    Yield_annual = Yield_annual / 100,
+    
+    days_in_year = if_else(
+      is_leap_year(year(Date)),
+      366, 365
+    ),
+    
+    Yield_day = (1 + Yield_annual)^(1 / days_in_year) - 1
+  ) %>%
+  select(-days_in_year)%>%
+  filter(year(Date) %in% c(2016, 2017))
+
+View(rf_df1)
+
+df_1 <- df1 %>%
+  inner_join(rf_df1, by = "Date")
+
+df_2 <- df2 %>%
+  inner_join(rf_df1, by = "Date")
+
+"Yield_day" %in% colnames(df1)
+
+View(df_1)
+```
+
+
+```{r}
+#Ham chon co 10% co phieu
+select_top10 <- function(data, sharpe_col, pct = 0.1) {
+
+  sharpe_col <- rlang::ensym(sharpe_col)
+
+  data %>%
+    group_by(cluster) %>%
+    group_modify(~ {
+      n_select <- ceiling(pct * nrow(.x))
+
+      .x %>%
+        arrange(desc(!!sharpe_col)) %>%
+        slice_head(n = n_select)
+    }) %>%
+    ungroup()
+}
+
+#Xu ly sharpe 1
+sharpe_df1 <- df_1 %>%
+  group_by(Ticker, cluster) %>%
+  mutate(Sharpe = (Log_Return - Yield_day) / sqrt(Variance_Pct_squared))%>%
+  summarise(
+    Sharpe_avg  = Sharpe,
+    .groups = "drop"
+  )
+sharpe_df1_ticker <- sharpe_df1 %>%
+  group_by(Ticker, cluster) %>%
+  summarise(
+    Sharpe_avg       = mean(Sharpe_avg,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Xu ly sharpe 2
+sharpe_df2 <- df_2 %>%
+  group_by(Ticker, cluster) %>%
+  mutate(
+    Sharpe_short = (Log_Return - Yield_day) / sqrt(Short_Run),
+    Sharpe_long  = (Log_Return - Yield_day) / sqrt(Long_Run)
+  ) %>%
+  summarise(
+    Sharpe_short_avg = mean(Sharpe_short, na.rm = TRUE),
+    Sharpe_long_avg  = mean(Sharpe_long,  na.rm = TRUE),
+    Sharpe_avg       = 0.5 * Sharpe_short_avg +
+                       0.5 * Sharpe_long_avg,
+    .groups = "drop"
+  )
+
+sharpe_df2_ticker <- sharpe_df2 %>%
+  group_by(Ticker, cluster) %>%
+  summarise(
+    Sharpe_avg       = mean(Sharpe_avg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+top10_df1 <- select_top10(sharpe_df1_ticker, "Sharpe_avg")
+top10_df2 <- select_top10(sharpe_df2_ticker, "Sharpe_avg")
+
+View(top10_df1)
+View(top10_df2)
+```
+
+```{r}
+#Xay dung danh muc toi uu MV
+
+#Lay du lieu theo ticker duoc chon
+var_df1 <- df1 %>%
+  filter(Ticker %in% top10_df1$Ticker) %>%
+  group_by(Ticker) %>%
+  summarise(
+    var_est = mean(Variance, na.rm = TRUE),
+    mu = mean(Log_Return, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+var_df2 <- df2 %>%
+  filter(Ticker %in% top10_df2$Ticker) %>%
+  mutate(Variance = Short_Run * Long_Run) %>%
+  group_by(Ticker) %>%
+  summarise(
+    var_est = mean(Variance, na.rm = TRUE),
+    mu = mean(Log_Return, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(
+    !is.na(var_est),
+    !is.nan(var_est),
+    var_est > 0,
+    !is.na(mu)
+  )
+View(var_df2)
+#Tao ma tran hiep phuong sai dua tren cor cua mau va phuong sai UL tu GARCH/GM
+R_mat1 <- df1 %>%
+  filter(Ticker %in% top10_df1$Ticker) %>%
+  select(Date, Ticker, Log_Return) %>%
+  pivot_wider(names_from = Ticker,
+              values_from = Log_Return) %>%
+  arrange(Date)%>%
+  select(-Date) %>%
+  na.omit() %>%
+  as.matrix()
+
+R_mat2 <- df2 %>%
+  filter(Ticker %in% top10_df2$Ticker) %>%
+  select(Date, Ticker, Log_Return) %>%
+  pivot_wider(names_from = Ticker,
+              values_from = Log_Return) %>%
+  arrange(Date)%>%
+  select(-Date) %>%
+  na.omit() %>%
+  as.matrix()
+
+R_sample1 <- cor(R_mat1)
+R_sample2 <- cor(R_mat2)
+
+
+var_df1 <- var_df1[match(colnames(R_mat1), var_df1$Ticker), ]
+var_df2 <- var_df2[match(colnames(R_mat2), var_df2$Ticker), ]
+
+
+D1 <- diag(sqrt(var_df1$var_est))
+D2 <- diag(sqrt(var_df2$var_est))
+
+
+mu1 = var_df1$mu
+mu2 = var_df2$mu
+
+Sigma1 <- D1 %*% R_sample1 %*% D1
+Sigma2 <- D2 %*% R_sample2 %*% D2
+
+
+```
+
+```{r}
+solve_markowitz <- function(mu,
+                            Sigma,
+                            target_return = NULL,
+                            long_only = FALSE,
+                            ticker_names = NULL) {
+  
+  library(quadprog)
+  n <- length(mu)
+  
+  if (is.null(target_return)) {
+    target_return <- mean(mu)
+  }
+  
+  Dmat <- 2 * Sigma
+  dvec <- rep(0, n)
+  
+  if (!long_only) {
+    
+    Amat <- cbind(mu, rep(1, n))
+    bvec <- c(target_return, 1)
+    
+    sol <- solve.QP(Dmat, dvec, Amat, bvec, meq = 2)
+    
+  } else {
+    
+    Amat <- cbind(mu, rep(1, n), diag(n))
+    bvec <- c(target_return, 1, rep(0, n))
+    
+    sol <- solve.QP(Dmat, dvec, Amat, bvec, meq = 2)
+  }
+  
+  weights <- sol$solution
+  
+  # Gắn ticker vào weight
+  if (!is.null(ticker_names)) {
+    names(weights) <- ticker_names
+  }
+  
+  # Portfolio performance
+  port_return <- sum(weights * mu)
+  port_var    <- as.numeric(t(weights) %*% Sigma %*% weights)
+  port_vol    <- sqrt(port_var)
+  
+  result <- list(
+    weights = weights,
+    performance = list(
+      return = port_return,
+      variance = port_var,
+      volatility = port_vol
+    )
+  )
+  
+  return(result)
+}
+
+port1 = solve_markowitz(mu1, Sigma1, 0.05, ticker_names = var_df1$Ticker)
+port1
+
+
+port2 = solve_markowitz(mu2, Sigma2, 0.05, ticker_names = var_df2$Ticker)
+port2
+
+#Kiem tra 
+sum(port1$weights)
+sum(port2$weights)
+
+
+```
+```{r}
+
+
+```
+
+
+
